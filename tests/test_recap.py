@@ -18,20 +18,12 @@ def test_recap_on_an_empty_day(repository):
     assert build_recap_text(repository, repository.today()) == "No expenses logged today 🎉"
 
 
-def test_recap_reports_total_breakdown_and_largest(repository):
+def test_recap_lists_every_item_in_id_order_with_a_total(repository):
     today = repository.today()
-    # Mirrors the PRD 7.2 example: Food leads on total, but the single biggest
-    # line item is the one Groceries run.
     repository.add_many(
         [
-            entry(30_000, "Food & Drink", "makan siang"),
-            entry(30_000, "Food & Drink", "makan malam"),
-            entry(22_000, "Food & Drink", "kopi"),
-            entry(15_000, "Food & Drink", "snack"),
-            entry(15_000, "Food & Drink", "es teh"),
             entry(45_000, "Transport", "grab"),
-            entry(25_000, "Transport", "gojek"),
-            entry(15_000, "Transport", "parkir"),
+            entry(20_000, "Food & Drink", "kopi hitam"),
             entry(50_000, "Groceries", "Superindo"),
         ],
         "x",
@@ -40,10 +32,44 @@ def test_recap_reports_total_breakdown_and_largest(repository):
     )
     text = build_recap_text(repository, today)
 
-    assert "Rp247.000" in text
-    assert "Food & Drink" in text and "Rp112.000" in text
-    assert "(5)" in text and "(3)" in text
-    assert "Largest: Rp50.000 — Superindo" in text
+    assert "Total: Rp115.000" in text
+    assert "Largest" not in text
+    grab_pos = text.index("grab")
+    kopi_pos = text.index("kopi hitam")
+    superindo_pos = text.index("Superindo")
+    assert grab_pos < kopi_pos < superindo_pos
+
+
+def test_recap_shows_item_names_not_categories(repository):
+    today = repository.today()
+    repository.add_many(
+        [entry(45_000, "Transport", "grab"), entry(20_000, "Food & Drink", "kopi hitam")],
+        "x",
+        "regex",
+        occurred_on=today,
+    )
+    text = build_recap_text(repository, today)
+    assert "grab" in text and "kopi hitam" in text
+    assert "Transport" not in text and "Food & Drink" not in text
+
+
+def test_recap_falls_back_to_the_raw_message_when_there_is_no_note(repository):
+    today = repository.today()
+    repository.add_many(
+        [ParsedEntry(amount=30_000, category="Food & Drink", note="", confidence=0.95)],
+        "makan siang 30k",
+        "regex",
+        occurred_on=today,
+    )
+    text = build_recap_text(repository, today)
+    assert "makan siang 30k" in text
+
+
+def test_recap_heading_includes_the_year(repository):
+    today = repository.today()
+    repository.add_many([entry(10_000, "Food & Drink", "kopi")], "x", "regex", occurred_on=today)
+    text = build_recap_text(repository, today)
+    assert str(today.year) in text.splitlines()[0]
 
 
 def test_recap_compares_against_the_seven_day_average(repository):

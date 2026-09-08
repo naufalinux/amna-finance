@@ -21,7 +21,7 @@ def money(amount: int, currency: str = "IDR") -> str:
 
 
 def pretty_date(day: date) -> str:
-    return f"{_DAY_NAMES[day.weekday()]}, {day.day} {_MONTH_NAMES[day.month - 1]}"
+    return f"{_DAY_NAMES[day.weekday()]}, {day.day} {_MONTH_NAMES[day.month - 1]} {day.year}"
 
 
 def confirmation(expenses, currency: str = "IDR") -> str:
@@ -48,27 +48,24 @@ def confirm_prompt(entries, currency: str = "IDR") -> str:
 
 def recap(
     day: date,
-    totals,
-    largest=None,
+    entries,
     average: float = 0.0,
     currency: str = "IDR",
     title: str | None = None,
 ) -> str:
-    total = sum(t.total for t in totals)
-    if not totals:
+    """Daily recap: every item logged today, in the order it was entered."""
+    if not entries:
         return "No expenses logged today 🎉"
+    total = sum(e.amount for e in entries)
 
     heading = title or pretty_date(day)
-    lines = [f"📊 {heading} — {money(total, currency)}", ""]
-    width = max(len(t.category) for t in totals)
-    for item in totals:
-        lines.append(
-            f"  {item.category:<{width}}  {money(item.total, currency):>12}  ({item.count})"
-        )
+    lines = [f"📊 {heading}", ""]
+    names = [entry.note or entry.raw_message for entry in entries]
+    width = max(len(name) for name in names)
+    for entry, name in zip(entries, names):
+        lines.append(f"• {name:<{width}}  {money(entry.amount, currency)}")
 
-    if largest is not None:
-        label = f" — {largest.note}" if largest.note else ""
-        lines += ["", f"Largest: {money(largest.amount, currency)}{label}"]
+    lines += ["", f"Total: {money(total, currency)}"]
 
     if average > 0:
         delta = (total - average) / average * 100

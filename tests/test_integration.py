@@ -30,8 +30,8 @@ async def test_a_days_messages_become_a_correct_recap(repository):
 
     recap = build_recap_text(repository, repository.today())
     assert "Rp360.000" in recap  # 45 + 20 + 45 + 250
-    assert "Groceries" in recap and "Rp250.000" in recap
-    assert "Largest: Rp250.000" in recap
+    assert "belanja superindo" in recap and "Rp250.000" in recap
+    assert "Total: Rp360.000" in recap
 
 
 async def test_sheets_outage_is_invisible_to_the_record(repository):

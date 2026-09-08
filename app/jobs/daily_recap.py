@@ -14,15 +14,11 @@ log = structlog.get_logger(__name__)
 
 
 def build_recap_text(repository, day: date, currency: str = "IDR", title: str | None = None) -> str:
-    entries = repository.entries_for_day(day)
+    entries = sorted(repository.entries_for_day(day), key=lambda e: e.id)
     if not entries:
         return "No expenses logged today 🎉"
-    totals = repository.totals_by_category(day, day)
-    largest = max(entries, key=lambda e: e.amount)
     average = repository.daily_average(day, days=7)
-    return formatting.recap(
-        day, totals, largest=largest, average=average, currency=currency, title=title
-    )
+    return formatting.recap(day, entries, average=average, currency=currency, title=title)
 
 
 def build_period_text(repository, start: date, end: date, label: str, currency: str = "IDR") -> str:
