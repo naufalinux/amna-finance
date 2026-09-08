@@ -41,11 +41,21 @@ class Settings(BaseSettings):
     llm_fallback_api_key: str = ""
     llm_timeout_seconds: float = 20.0
 
+    # --- backups ---
+    # Absent BACKUP_PATH disables the job with a startup warning, matching how
+    # Sheets and the LLM already degrade.
+    backup_enabled: bool = True
+    backup_path: Path | None = None
+    backup_time: str = "03:00"
+    backup_keep_daily: int = 14
+    backup_keep_monthly: int = 12
+
     # --- behaviour ---
     timezone: str = "Asia/Jakarta"
     recap_time: str = "21:00"
     default_currency: str = "IDR"
     sync_interval_minutes: int = 5
+    reconcile_weekday: int = 0  # Monday
     confidence_threshold: float = Field(0.7, ge=0.0, le=1.0)
 
     @property
@@ -77,9 +87,21 @@ class Settings(BaseSettings):
         return self.llm_primary_enabled or self.llm_fallback_enabled
 
     @property
-    def recap_hour_minute(self) -> tuple[int, int]:
-        hour, _, minute = self.recap_time.partition(":")
+    def backups_enabled(self) -> bool:
+        return self.backup_enabled and self.backup_path is not None
+
+    @staticmethod
+    def _hour_minute(value: str) -> tuple[int, int]:
+        hour, _, minute = value.partition(":")
         return int(hour), int(minute or 0)
+
+    @property
+    def recap_hour_minute(self) -> tuple[int, int]:
+        return self._hour_minute(self.recap_time)
+
+    @property
+    def backup_hour_minute(self) -> tuple[int, int]:
+        return self._hour_minute(self.backup_time)
 
 
 @lru_cache

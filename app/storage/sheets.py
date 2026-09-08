@@ -14,7 +14,15 @@ import structlog
 
 log = structlog.get_logger(__name__)
 
-HEADER = ["uuid", "date", "amount", "currency", "category", "note", "raw", "parser"]
+HEADER = [
+    "uuid", "date", "amount", "currency", "category", "note", "raw", "parser",
+    # A deleted entry is represented by flipping this cell, never by removing
+    # the row: deleting row N shifts every row below it up by one and silently
+    # invalidates every `sheet_row` stored in SQLite.
+    "status",
+]
+LAST_COLUMN = chr(ord("A") + len(HEADER) - 1)
+STATUS_COLUMN = HEADER.index("status") + 1
 SCOPES = [
     "https://www.googleapis.com/auth/spreadsheets",
     "https://www.googleapis.com/auth/drive.file",
@@ -28,6 +36,15 @@ class NullSheetsClient:
 
     async def append(self, expenses):  # noqa: ARG002
         return {}
+
+    async def update(self, expenses):  # noqa: ARG002
+        return {}
+
+    async def ensure_status_column(self) -> None:
+        return None
+
+    async def fetch_rows(self) -> list[list[str]]:
+        return []
 
     async def health(self) -> str:
         return "disabled"
@@ -81,6 +98,62 @@ class SheetsClient:
         placed = {e.uuid: first_row + i for i, e in enumerate(pending)}
         return {**already, **placed}
 
+    def _update_blocking(self, expenses) -> dict[str, int]:
+        """Rewrite known rows in place. Returns {uuid: row} for verified writes.
+
+        The uuid in column A is re-verified against `sheet_row` before writing:
+        if a human reordered or deleted rows, the recorded row number now points
+        at someone else's entry and must not be overwritten. Mismatches are
+        omitted from the result so the caller can clear `sheet_row` and let the
+        row re-append.
+        """
+        worksheet = self._get_worksheet()
+        column_a = worksheet.col_values(1)
+
+        requests: list[dict] = []
+        placed: dict[str, int] = {}
+        for expense in expenses:
+            row = expense.sheet_row
+            if not row or row > len(column_a) or column_a[row - 1] != expense.uuid:
+                log.warning(
+                    "sheets.uuid_mismatch", uuid=expense.uuid, sheet_row=row
+                )
+                continue
+            requests.append(
+                {
+                    "range": f"A{row}:{LAST_COLUMN}{row}",
+                    "values": [expense.sheet_values()],
+                }
+            )
+            placed[expense.uuid] = row
+
+        if requests:
+            # One batch call for the whole set: undoing a 5-item message must
+            # cost one API call, not five.
+            worksheet.batch_update(requests, value_input_option="RAW")
+        return placed
+
+    def _ensure_status_column_blocking(self) -> None:
+        worksheet = self._get_worksheet()
+        header = worksheet.row_values(1)
+        if len(header) >= len(HEADER) and header[STATUS_COLUMN - 1] == "status":
+            return
+        row_count = len(worksheet.col_values(1))
+        requests = [{"range": f"A1:{LAST_COLUMN}1", "values": [HEADER]}]
+        if row_count > 1:
+            # Everything written before the upgrade is active by definition.
+            requests.append(
+                {
+                    "range": f"{LAST_COLUMN}2:{LAST_COLUMN}{row_count}",
+                    "values": [["active"]] * (row_count - 1),
+                }
+            )
+        worksheet.batch_update(requests, value_input_option="RAW")
+        log.info("sheets.status_column_added", backfilled=max(row_count - 1, 0))
+
+    def _fetch_rows_blocking(self) -> list[list[str]]:
+        return self._get_worksheet().get_all_values()[1:]
+
     # --- async surface ------------------------------------------------------
 
     async def append(self, expenses) -> dict[str, int]:
@@ -92,6 +165,23 @@ class SheetsClient:
         if not expenses:
             return {}
         return await asyncio.to_thread(self._append_blocking, list(expenses))
+
+    async def update(self, expenses) -> dict[str, int]:
+        """Rewrite rows already present in the sheet. Returns {uuid: sheet_row}.
+
+        Raises on API failure -- the rows stay dirty and the retry job repeats.
+        """
+        if not expenses:
+            return {}
+        return await asyncio.to_thread(self._update_blocking, list(expenses))
+
+    async def ensure_status_column(self) -> None:
+        """Idempotent header migration for sheets written before `status`."""
+        await asyncio.to_thread(self._ensure_status_column_blocking)
+
+    async def fetch_rows(self) -> list[list[str]]:
+        """Every data row, header excluded. Used by reconciliation."""
+        return await asyncio.to_thread(self._fetch_rows_blocking)
 
     async def health(self) -> str:
         try:

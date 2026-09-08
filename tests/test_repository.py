@@ -135,3 +135,137 @@ def test_sheet_values_match_the_sheet_column_order(repository):
     assert values[5] == "grab"
     assert values[6] == "grab 45k"
     assert values[7] == "regex"
+
+
+# --- corrections (PRD 7.1) --------------------------------------------------
+
+
+def test_every_row_of_one_message_shares_a_batch_id(repository):
+    rows = repository.add_many([entry(1_000), entry(2_000)], "a, b", "regex")
+    other = repository.add_many([entry(3_000)], "c", "regex")
+
+    assert rows[0].batch_id == rows[1].batch_id
+    assert other[0].batch_id != rows[0].batch_id
+
+
+def test_last_batch_returns_the_whole_newest_message(repository):
+    repository.add_many([entry(1_000)], "old", "regex", user_id=7)
+    newest = repository.add_many([entry(2_000), entry(3_000)], "new", "regex", user_id=7)
+
+    found = repository.last_batch(7)
+    assert [r.uuid for r in found] == [r.uuid for r in newest]
+
+
+def test_last_entry_is_the_newest_single_row(repository):
+    repository.add_many([entry(1_000)], "old", "regex", user_id=7)
+    newest = repository.add_many([entry(2_000), entry(3_000)], "new", "regex", user_id=7)
+
+    assert repository.last_entry(7).uuid == newest[-1].uuid
+
+
+def test_one_owner_cannot_reach_another_owners_entry(repository):
+    """PRD 7.1: my /undo never touches my partner's last message."""
+    mine = repository.add_many([entry(1_000)], "mine", "regex", user_id=7)
+    repository.add_many([entry(2_000)], "theirs", "regex", user_id=9)
+
+    assert [r.uuid for r in repository.last_batch(7)] == [mine[0].uuid]
+    assert repository.last_entry(7).uuid == mine[0].uuid
+
+
+def test_a_legacy_row_with_no_owner_stays_correctable(repository):
+    legacy = repository.add_many([entry(1_000)], "legacy", "regex")
+
+    assert repository.last_entry(7).uuid == legacy[0].uuid
+    assert repository.last_entry(9).uuid == legacy[0].uuid
+
+
+def test_repeated_undo_walks_backwards_through_the_messages(repository):
+    first = repository.add_many([entry(1_000)], "first", "regex", user_id=7)
+    second = repository.add_many([entry(2_000)], "second", "regex", user_id=7)
+    third = repository.add_many([entry(3_000)], "third", "regex", user_id=7)
+
+    for expected in (third, second, first):
+        batch = repository.last_batch(7)
+        assert [r.uuid for r in batch] == [r.uuid for r in expected]
+        repository.soft_delete_batch(batch[0].batch_id)
+
+    assert repository.last_batch(7) == []  # nothing left to undo
+
+
+def test_soft_delete_batch_removes_every_item_of_the_message(repository):
+    rows = repository.add_many([entry(1_000), entry(2_000), entry(3_000)], "x", "regex")
+
+    removed = repository.soft_delete_batch(rows[0].batch_id)
+
+    assert len(removed) == 3
+    assert all(r.deleted_at is not None for r in removed)
+    assert repository.entries_for_day() == []
+
+
+def test_soft_delete_batch_is_idempotent(repository):
+    rows = repository.add_many([entry(1_000)], "x", "regex")
+    repository.soft_delete_batch(rows[0].batch_id)
+
+    assert repository.soft_delete_batch(rows[0].batch_id) == []
+
+
+def test_update_amount_corrects_the_row_and_marks_the_mirror_stale(repository):
+    rows = repository.add_many([entry(45_000)], "grab 45k", "regex")
+    repository.mark_synced(rows[0].uuid, 4)
+
+    updated = repository.update_amount(rows[0].uuid, 145_000)
+
+    assert updated.amount == 145_000
+    assert updated.updated_at is not None
+    assert updated.sheet_synced == 0
+    assert updated.sheet_row == 4  # the sheet mapping must survive
+
+
+def test_update_category_corrects_the_row(repository):
+    rows = repository.add_many([entry(15_000)], "titip 15k", "regex")
+
+    updated = repository.update_category(rows[0].uuid, "Groceries")
+
+    assert updated.category == "Groceries"
+    assert updated.sheet_synced == 0
+
+
+def test_correcting_a_deleted_row_does_nothing(repository):
+    rows = repository.add_many([entry(1_000)], "x", "regex")
+    repository.soft_delete(rows[0].uuid)
+
+    assert repository.update_amount(rows[0].uuid, 2_000) is None
+    assert repository.update_category(rows[0].uuid, "Groceries") is None
+
+
+def test_correcting_an_unknown_uuid_does_nothing(repository):
+    assert repository.update_amount("nope", 1_000) is None
+    assert repository.update_category("nope", "Groceries") is None
+
+
+def test_a_deleted_row_that_reached_the_sheet_is_still_dirty(repository):
+    """/undo has to tell the sheet, so the row stays in the sync queue."""
+    rows = repository.add_many([entry(1_000)], "x", "regex")
+    repository.mark_synced(rows[0].uuid, 3)
+    repository.soft_delete(rows[0].uuid)
+
+    assert [r.uuid for r in repository.unsynced()] == [rows[0].uuid]
+    assert repository.stats().unsynced == 1
+
+
+def test_a_deleted_row_that_never_reached_the_sheet_has_nothing_to_say(repository):
+    rows = repository.add_many([entry(1_000)], "x", "regex")
+    repository.soft_delete(rows[0].uuid)
+
+    assert repository.unsynced() == []
+
+
+def test_clear_sheet_row_sends_the_row_back_to_the_append_queue(repository):
+    rows = repository.add_many([entry(1_000)], "x", "regex")
+    repository.mark_synced(rows[0].uuid, 3)
+
+    repository.clear_sheet_row(rows[0].uuid)
+
+    pending = repository.unsynced()
+    assert [r.uuid for r in pending] == [rows[0].uuid]
+    assert pending[0].sheet_row is None

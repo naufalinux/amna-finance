@@ -1,0 +1,20 @@
+# Alternative to journald, for anyone who prefers log files.
+#
+# Not the documented default. To use it, replace the unit's journal output with
+#   StandardOutput=append:/var/log/expense-agent/expense-agent.log
+#   StandardError=inherit
+# add /var/log/expense-agent to ReadWritePaths, and install this file to
+# /etc/logrotate.d/expense-agent.
+/var/log/expense-agent/*.log {
+    daily
+    rotate 30
+    compress
+    delaycompress
+    missingok
+    notifempty
+    create 0640 expense expense
+    sharedscripts
+    postrotate
+        systemctl kill -s SIGHUP expense-agent.service 2>/dev/null || true
+    endscript
+}

@@ -61,13 +61,39 @@ grab 45k, kopi hitam 20rb
 | `/today` | Today's recap: every item logged today, in order, with the day's total and delta vs 7-day average |
 | `/week` | Monday-to-today, per-category |
 | `/month` | 1st-to-today, per-category |
+| `/last` | Show what `/undo` and `/edit` would act on, without changing anything |
+| `/undo` | Remove your last message — every item of it |
+| `/edit <amount>` | Correct the amount, e.g. `/edit 145k` |
+| `/cat <category>` | Correct the category, snapped onto the taxonomy |
 | `/sync` | Force a Sheets flush; report what's still pending |
-| `/stats` | Row count, unsynced count, last sync, parser hit rates |
+| `/reconcile` | Compare the Sheet against the database and report any divergence |
+| `/stats` | Row count, unsynced count, last sync, last backup, parser hit rates |
 
 The bot ignores every user whose ID is not listed in `TELEGRAM_OWNER_ID`
 (comma-separated for multiple owners, e.g. `TELEGRAM_OWNER_ID=111,222`). All
 listed owners can log expenses and use commands, and all receive the daily
 recap.
+
+### Fixing a bad entry
+
+```
+grab 45k
+→ ✅ Logged 1 item — Rp45.000
+
+/edit 145k
+→ ✏️ grab: Rp45.000 → Rp145.000
+```
+
+`/undo` works on the whole **message**, so a three-item message is removed as a
+unit; sending it twice removes the two most recent messages. `/edit` and `/cat`
+work on a single **entry**, and offer an inline picker when the last message
+held more than one item. Corrections older than today ask for confirmation
+first.
+
+Every entry records which owner logged it, so your corrections never reach your
+partner's entries. Corrections are applied to SQLite immediately and reach the
+Sheet on the next sweep — the Sheet row is updated in place, never duplicated,
+and an undone entry is marked `status = deleted` rather than removed.
 
 ## 🧩 How parsing works
 
@@ -111,7 +137,8 @@ app/
   bot/               handlers (owner guard, logging, commands) + formatting
   parsing/           regex fast-path, LLM fallback, category taxonomy
   storage/           models, SQLite engine + migrations, Sheets client, repository
-  jobs/              daily recap, Sheets sync/retry
+  jobs/              daily recap, Sheets sync/retry, backup, reconciliation
+deploy/              systemd unit, journald retention, install.sh
 tests/
 ```
 
@@ -126,7 +153,17 @@ goes through it.
    "anyone with link").
 4. Set `GOOGLE_SHEET_ID` and `GOOGLE_CREDENTIALS_PATH`.
 
-The worksheet and its header row are created on first write.
+The worksheet and its header row are created on first write. The columns are
+`uuid, date, amount, currency, category, note, raw, parser, status`; a sheet
+created before the `status` column existed gains it automatically on the next
+startup, backfilled with `active`.
+
+**Don't delete or reorder rows in the Sheet.** Deleting row *N* shifts every
+row below it up by one and invalidates the row numbers stored in SQLite. An
+undone entry is represented by `status = deleted`; point any `Summary` tab at
+`status = "active"`. If a row is moved by hand anyway, the uuid check catches
+it: the stored row number is discarded, the row is re-appended at the bottom,
+and `/reconcile` reports the leftover orphan.
 
 ## 🧪 Tests
 
@@ -138,11 +175,44 @@ The worksheet and its header row are created on first write.
 entries the parser must produce; it's the highest-value suite in the project.
 No test touches Telegram, Google, or an LLM.
 
+## 🛠️ Running it on a server
+
+```bash
+sudo deploy/install.sh     # or: make install
+```
+
+Idempotent: it creates the `expense` system user and `/opt/expense-agent`,
+builds the venv, installs the systemd unit and journald retention drop-in,
+locks down `.env` and the service-account key, migrates with the app stopped,
+and enables the service.
+
+- **Supervision** — systemd, not Docker: `Restart=always` with crash-loop
+  protection, and a hardened unit (`ProtectSystem=strict`, `NoNewPrivileges`,
+  `SystemCallFilter`, no capabilities). `SIGTERM` is handled explicitly — the
+  bot stops polling, flushes anything unsynced to the Sheet, checkpoints the
+  WAL and exits 0, so `systemctl stop` and reboots cost nothing.
+- **Backups** — nightly at 03:00, using SQLite's online backup API, verified
+  with `PRAGMA integrity_check` *before* the copy is kept. Retention is 14
+  daily plus the first backup of each of the last 12 months. A failure alerts
+  every owner on Telegram; successes are silent and shown by `/stats`. Set
+  `BACKUP_PATH` to enable.
+- **Reconciliation** — a weekly job (and `/reconcile` on demand) compares the
+  Sheet against the database in both directions. It reports and never repairs.
+- **Logs** — structured lines to stdout, routed to journald, capped at 200 MB
+  and one month. No logrotate config to maintain.
+
+`make help` lists the operational targets: `deploy`, `migrate`, `logs`,
+`status`, `backup-now`, `restore BACKUP=<file>`.
+
+Day-to-day operations, the restore drill and troubleshooting live in
+[docs/runbook.md](docs/runbook.md).
+
 ## 🚧 Not yet built
 
-`/undo`, `/edit`, `/cat` (PRD P6); the systemd unit, backups and log rotation
-(P7); the Hermes Agent integration (P8). All three attach to
-`storage/repository.py`.
+The Hermes Agent integration (PRD P8). It attaches to
+`storage/repository.py`, which stays the only module touching SQL, so the
+local HTTP API and the MCP server can both wrap the functions the bot already
+uses.
 
 ## 📜 License
 

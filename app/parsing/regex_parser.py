@@ -91,6 +91,19 @@ def _parse_number(raw: str, suffix: str | None) -> tuple[int, float] | None:
     return (amount, confidence) if amount > 0 else None
 
 
+def parse_amount(text: str) -> tuple[int, float] | None:
+    """Read a bare amount, e.g. from `/edit 145k`. Returns (minor units, confidence).
+
+    Deliberately a thin wrapper over `_parse_number` rather than a second
+    number grammar: `/edit 50k`, `/edit 50rb`, `/edit 50.000` and `/edit 1.5jt`
+    must mean exactly what they mean in a logged message.
+    """
+    match = _AMOUNT_RE.fullmatch(text.strip())
+    if not match:
+        return None
+    return _parse_number(match.group("num"), match.group("suffix"))
+
+
 def _clean_note(text: str) -> str:
     words = [w for w in re.split(r"\s+", text.strip()) if w]
     kept = [w for w in words if w.lower().strip(".,!?") not in _FILLER]
