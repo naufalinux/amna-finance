@@ -19,7 +19,11 @@ class Settings(BaseSettings):
 
     # --- required ---
     telegram_bot_token: str
-    telegram_owner_id: int
+    # Comma-separated in .env: TELEGRAM_OWNER_ID=111,222. All listed IDs may
+    # log expenses and use commands, and all receive the daily recap. Kept as
+    # a raw string field -- pydantic-settings JSON-decodes list-typed env vars
+    # before any validator runs, which rejects a plain comma list.
+    telegram_owner_id: str
 
     # --- storage ---
     db_path: Path = Path("data/expenses.db")
@@ -43,6 +47,14 @@ class Settings(BaseSettings):
     default_currency: str = "IDR"
     sync_interval_minutes: int = 5
     confidence_threshold: float = Field(0.7, ge=0.0, le=1.0)
+
+    @property
+    def owner_ids(self) -> set[int]:
+        return {
+            int(part.strip())
+            for part in self.telegram_owner_id.split(",")
+            if part.strip()
+        }
 
     @property
     def sheets_enabled(self) -> bool:

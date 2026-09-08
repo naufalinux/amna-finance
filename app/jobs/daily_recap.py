@@ -32,13 +32,18 @@ def build_period_text(repository, start: date, end: date, label: str, currency: 
 
 def build_recap_job(bot, repository, settings):
     async def daily_recap_job() -> None:
+        day = repository.today()
         try:
-            day = repository.today()
             text = build_recap_text(repository, day, currency=settings.default_currency)
-            await bot.send_message(settings.telegram_owner_id, text)
-            log.info("recap.sent", day=day.isoformat())
         except Exception as exc:
             log.error("recap.failed", error=str(exc))
+            return
+        for owner_id in settings.owner_ids:
+            try:
+                await bot.send_message(owner_id, text)
+            except Exception as exc:
+                log.error("recap.send_failed", owner_id=owner_id, error=str(exc))
+        log.info("recap.sent", day=day.isoformat(), recipients=len(settings.owner_ids))
 
     return daily_recap_job
 

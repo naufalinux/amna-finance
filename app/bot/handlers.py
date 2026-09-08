@@ -35,8 +35,8 @@ class OwnerOnlyMiddleware(BaseMiddleware):
     public-ish and anyone who finds the bot can message it.
     """
 
-    def __init__(self, owner_id: int):
-        self.owner_id = owner_id
+    def __init__(self, owner_ids: set[int]):
+        self.owner_ids = owner_ids
 
     async def __call__(
         self,
@@ -45,7 +45,7 @@ class OwnerOnlyMiddleware(BaseMiddleware):
         data: dict[str, Any],
     ) -> Any:
         user = data.get("event_from_user")
-        if user is None or user.id != self.owner_id:
+        if user is None or user.id not in self.owner_ids:
             log.warning(
                 "auth.rejected", user_id=getattr(user, "id", None)
             )
@@ -67,10 +67,8 @@ Commands:
 
 def build_router(repository, sync, llm_parser, settings) -> Router:
     router = Router(name="expenses")
-    router.message.outer_middleware(OwnerOnlyMiddleware(settings.telegram_owner_id))
-    router.callback_query.outer_middleware(
-        OwnerOnlyMiddleware(settings.telegram_owner_id)
-    )
+    router.message.outer_middleware(OwnerOnlyMiddleware(settings.owner_ids))
+    router.callback_query.outer_middleware(OwnerOnlyMiddleware(settings.owner_ids))
 
     currency = settings.default_currency
     # Entries awaiting an inline-keyboard yes/no, keyed by a short token.

@@ -42,7 +42,10 @@ grab 45k, kopi hitam 20rb
 | `/sync` | Force a Sheets flush; report what's still pending |
 | `/stats` | Row count, unsynced count, last sync, parser hit rates |
 
-The bot ignores every user whose ID is not `TELEGRAM_OWNER_ID`.
+The bot ignores every user whose ID is not listed in `TELEGRAM_OWNER_ID`
+(comma-separated for multiple owners, e.g. `TELEGRAM_OWNER_ID=111,222`). All
+listed owners can log expenses and use commands, and all receive the daily
+recap.
 
 ## How parsing works
 

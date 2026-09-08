@@ -1,20 +1,21 @@
-"""The owner guard -- anyone can find the bot, only the owner may use it."""
+"""The owner guard -- anyone can find the bot, only listed owners may use it."""
 
 from types import SimpleNamespace
 
 from app.bot.handlers import OwnerOnlyMiddleware
 
 OWNER = 12345
+OWNERS = {11111, 22222}
 
 
-async def run_guard(user_id):
+async def run_guard(user_id, owner_ids={OWNER}):
     calls = []
 
     async def handler(event, data):
         calls.append(event)
         return "handled"
 
-    middleware = OwnerOnlyMiddleware(OWNER)
+    middleware = OwnerOnlyMiddleware(owner_ids)
     user = None if user_id is None else SimpleNamespace(id=user_id)
     result = await middleware(handler, SimpleNamespace(), {"event_from_user": user})
     return result, calls
@@ -40,5 +41,18 @@ async def test_missing_user_is_dropped():
 
 async def test_owner_id_is_compared_as_an_int_not_a_string():
     result, calls = await run_guard(str(OWNER))
+    assert result is None
+    assert calls == []
+
+
+async def test_any_listed_owner_passes_through():
+    for owner_id in OWNERS:
+        result, calls = await run_guard(owner_id, owner_ids=OWNERS)
+        assert result == "handled"
+        assert len(calls) == 1
+
+
+async def test_a_non_listed_user_is_dropped_when_multiple_owners_are_configured():
+    result, calls = await run_guard(99999, owner_ids=OWNERS)
     assert result is None
     assert calls == []
