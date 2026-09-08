@@ -46,6 +46,71 @@ def confirm_prompt(entries, currency: str = "IDR") -> str:
     return "\n".join(lines)
 
 
+def entry_label(expense) -> str:
+    """How one entry is named in a correction message."""
+    return expense.note or expense.raw_message
+
+
+def last_batch(expenses, currency: str = "IDR") -> str:
+    """What /undo and /edit would act on. Read-only, so it is safe to guess."""
+    if not expenses:
+        return "Nothing logged yet."
+    total = sum(e.amount for e in expenses)
+    day = date.fromisoformat(expenses[0].occurred_at)
+    lines = [f"🧾 Last entry — {pretty_date(day)}", ""]
+    for expense in expenses:
+        lines.append(
+            f"• {expense.category:<16} {money(expense.amount, currency)}"
+            f"  {entry_label(expense)}"
+        )
+    if len(expenses) > 1:
+        lines += ["", f"Total {money(total, currency)}"]
+    lines += ["", "/undo removes it · /edit <amount> · /cat <category>"]
+    return "\n".join(lines)
+
+
+def undo_confirmation(expenses, currency: str = "IDR") -> str:
+    total = sum(e.amount for e in expenses)
+    count = len(expenses)
+    noun = "item" if count == 1 else "items"
+    return f"🗑 Removed {count} {noun} — −{money(total, currency)}"
+
+
+def undo_prompt(expenses, currency: str = "IDR") -> str:
+    """Asked before undoing something that is not from today."""
+    day = date.fromisoformat(expenses[0].occurred_at)
+    total = sum(e.amount for e in expenses)
+    count = len(expenses)
+    noun = "item" if count == 1 else "items"
+    return (
+        f"That's from {day.day} {_MONTH_NAMES[day.month - 1]}"
+        f" — remove {count} {noun}, {money(total, currency)}?"
+    )
+
+
+def amount_correction(expense, previous: int, currency: str = "IDR") -> str:
+    return (
+        f"✏️ {entry_label(expense)}: "
+        f"{money(previous, currency)} → {money(expense.amount, currency)}"
+    )
+
+
+def category_correction(expense, previous: str) -> str:
+    return f"🏷 {entry_label(expense)}: {previous} → {expense.category}"
+
+
+def picker_prompt(expenses, currency: str = "IDR") -> str:
+    return "Which one?\n\n" + "\n".join(
+        f"• {entry_label(e)}  {money(e.amount, currency)}" for e in expenses
+    )
+
+
+def picker_label(expense, currency: str = "IDR") -> str:
+    """Button text for the multi-entry picker; Telegram caps this at 64 chars."""
+    label = f"{entry_label(expense)} {money(expense.amount, currency)}"
+    return label if len(label) <= 60 else label[:57] + "..."
+
+
 def recap(
     day: date,
     entries,
@@ -92,9 +157,10 @@ def stats(snapshot) -> str:
     lines = [
         "📦 Stats",
         "",
-        f"Rows:      {snapshot.rows}",
-        f"Unsynced:  {snapshot.unsynced}",
-        f"Last sync: {snapshot.last_sync or 'never'}",
+        f"Rows:        {snapshot.rows}",
+        f"Unsynced:    {snapshot.unsynced}",
+        f"Last sync:   {snapshot.last_sync or 'never'}",
+        f"Last backup: {snapshot.last_backup or 'never'}",
     ]
     if snapshot.parser_counts:
         lines += ["", "By parser:"]

@@ -26,10 +26,18 @@ class Expense(SQLModel, table=True):
     sheet_synced: int = 0
     sheet_row: int | None = None
     deleted_at: str | None = None
+    user_id: int | None = None  # Telegram id; NULL = logged pre-multi-owner
+    batch_id: str | None = None  # shared by every row of one message
+    updated_at: str | None = None  # last correction; NULL = never edited
+
+    @property
+    def status(self) -> str:
+        """How the row is represented in the sheet's status column."""
+        return "deleted" if self.deleted_at else "active"
 
     def sheet_values(self) -> list[str | int]:
         """Row in the sheet's column order: uuid, date, amount, currency,
-        category, note, raw, parser."""
+        category, note, raw, parser, status."""
         return [
             self.uuid,
             self.occurred_at,
@@ -39,6 +47,7 @@ class Expense(SQLModel, table=True):
             self.note or "",
             self.raw_message,
             self.parser,
+            self.status,
         ]
 
 

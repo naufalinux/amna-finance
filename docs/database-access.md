@@ -253,10 +253,63 @@ CREATE TABLE expenses (
     confidence    REAL,                      -- 0..1, parser's self-reported confidence
     sheet_synced  INTEGER NOT NULL DEFAULT 0,
     sheet_row     INTEGER,                   -- row number once written to the Sheet
-    deleted_at    TEXT                       -- soft delete
+    deleted_at    TEXT,                      -- soft delete, set by /undo
+    -- added by migration 2
+    user_id       INTEGER,                   -- Telegram id; NULL = pre-multi-owner
+    batch_id      TEXT,                      -- shared by every row of one message
+    updated_at    TEXT                       -- last correction; NULL = never edited
 );
 ```
 
-Defined in `app/storage/db.py`. See the
-[corrections & operations PRD](plan/2026-09-08-amna-corrections-and-operations-PRD.md)
-for the `user_id` / `batch_id` columns planned for the next migration.
+Defined in `app/storage/db.py`, which carries the ordered `MIGRATIONS` list.
+Migration 2 is additive only, and backfilled `batch_id` for pre-existing rows
+by grouping on `(created_at, raw_message)` — those rows carry a `legacy-<id>`
+batch id and a NULL `user_id`.
+
+### Reading the mirror state
+
+`sheet_synced` and `sheet_row` together say what the Sheet needs, which is why
+a correction only ever clears `sheet_synced` and leaves `sheet_row` alone:
+
+| `sheet_synced` | `sheet_row` | Meaning | The sync job will |
+|---|---|---|---|
+| `0` | `NULL` | never written | append, and store the new row number |
+| `0` | *N* | written, then corrected | update row *N* in place |
+| `1` | *N* | Sheet matches SQLite | nothing |
+
+```sql
+-- What the next sync sweep will do, and to which rows
+SELECT uuid, amount, category,
+       CASE WHEN sheet_row IS NULL THEN 'append' ELSE 'update row ' || sheet_row END
+           AS pending_action
+FROM expenses
+WHERE sheet_synced = 0
+  AND (deleted_at IS NULL OR sheet_row IS NOT NULL)
+ORDER BY id;
+```
+
+Deleted rows still appear here when they reached the Sheet: `/undo` has to flip
+the Sheet's `status` column to `deleted`, because rows are mutated in place and
+never removed.
+
+### Entries grouped by message
+
+```sql
+-- What /undo would remove for a given owner, newest message first
+SELECT batch_id, COUNT(*) AS items, SUM(amount) AS total, MIN(raw_message) AS message
+FROM expenses
+WHERE deleted_at IS NULL
+  AND (user_id = :me OR user_id IS NULL)
+GROUP BY batch_id
+ORDER BY MAX(id) DESC
+LIMIT 5;
+```
+
+### Corrections made so far
+
+```sql
+SELECT uuid, occurred_at, amount, category, updated_at, deleted_at
+FROM expenses
+WHERE updated_at IS NOT NULL
+ORDER BY updated_at DESC;
+```

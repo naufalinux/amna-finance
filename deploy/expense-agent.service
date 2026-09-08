@@ -1,0 +1,49 @@
+[Unit]
+Description=Amna Finance — Telegram Expense Agent
+After=network-online.target
+Wants=network-online.target
+# Without these, a bad token or a corrupt DB turns Restart=always into a hot
+# crash-loop that fills the journal.
+StartLimitIntervalSec=300
+StartLimitBurst=5
+
+[Service]
+Type=simple
+User=expense
+Group=expense
+WorkingDirectory=/opt/expense-agent
+EnvironmentFile=/opt/expense-agent/.env
+ExecStart=/opt/expense-agent/.venv/bin/python -m app.main
+Restart=always
+RestartSec=10
+# The app stops polling, flushes to Sheets and checkpoints the WAL on SIGTERM;
+# this is only the backstop if that takes too long.
+TimeoutStopSec=30
+KillSignal=SIGTERM
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=expense-agent
+
+# hardening
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_INET AF_INET6
+RestrictNamespaces=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+CapabilityBoundingSet=
+UMask=0077
+# ProtectSystem=strict makes everything read-only; these two are the only
+# paths the process writes to.
+ReadWritePaths=/opt/expense-agent/data /opt/expense-agent/backups
+
+[Install]
+WantedBy=multi-user.target

@@ -75,3 +75,49 @@ def test_decimal_comma_is_not_an_item_separator():
     result = regex_parser.parse("hotel 2,5 juta")
     assert len(result.entries) == 1
     assert result.entries[0].amount == 2_500_000
+
+
+# --- parse_amount, shared with /edit ----------------------------------------
+
+
+@pytest.mark.parametrize(
+    "text,expected",
+    [
+        ("50k", 50_000),
+        ("50rb", 50_000),
+        ("50 ribu", 50_000),
+        ("50.000", 50_000),
+        ("50,000", 50_000),
+        ("1.5jt", 1_500_000),
+        ("2,5 juta", 2_500_000),
+        ("Rp45.000", 45_000),
+        ("rp 45k", 45_000),
+        ("45000", 45_000),
+        (" 145k ", 145_000),
+    ],
+)
+def test_parse_amount_reads_every_money_syntax_the_parser_knows(text, expected):
+    amount, confidence = regex_parser.parse_amount(text)
+    assert amount == expected
+    assert 0 < confidence <= 1
+
+
+@pytest.mark.parametrize("text", ["", "  ", "banana", "45k dan 20k", "kopi 20k", "-5k"])
+def test_parse_amount_refuses_anything_that_is_not_just_an_amount(text):
+    """`/edit` takes an amount, not a message -- ambiguity must be rejected."""
+    assert regex_parser.parse_amount(text) is None
+
+
+@pytest.mark.parametrize("case", CASES, ids=lambda c: c["message"])
+def test_parse_amount_agrees_with_the_corpus_on_single_item_messages(case):
+    """Whatever the corpus says an amount means, /edit must mean the same."""
+    entries = case["entries"]
+    if len(entries) != 1:
+        pytest.skip("multi-item message: not a bare amount")
+    parsed = regex_parser.parse(case["message"]).entries
+    if not parsed:
+        pytest.skip("corpus case the fast-path deliberately leaves to the LLM")
+
+    # Feed /edit exactly the amount text the parser found in the message.
+    fragment = regex_parser._AMOUNT_RE.search(case["message"]).group(0)
+    assert regex_parser.parse_amount(fragment)[0] == parsed[0].amount

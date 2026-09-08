@@ -6,7 +6,7 @@ from typing import Any
 
 import structlog
 from aiogram import BaseMiddleware, F, Router
-from aiogram.filters import Command, CommandStart
+from aiogram.filters import Command, CommandObject, CommandStart
 from aiogram.types import (
     CallbackQuery,
     InlineKeyboardButton,
@@ -22,7 +22,8 @@ from app.jobs.daily_recap import (
     month_bounds,
     week_bounds,
 )
-from app.parsing import regex_parser
+from app.jobs.reconcile import format_report, reconcile
+from app.parsing import categories, regex_parser
 from app.parsing.models import ParsedEntry
 
 log = structlog.get_logger(__name__)
@@ -61,7 +62,12 @@ Commands:
 /today — today's recap
 /week — this week so far
 /month — this month so far
+/last — show what /undo would remove
+/undo — remove your last message
+/edit <amount> — fix the amount
+/cat <category> — fix the category
 /sync — force a Google Sheets flush
+/reconcile — compare the Sheet against the database
 /stats — database and sync status"""
 
 
@@ -72,10 +78,19 @@ def build_router(repository, sync, llm_parser, settings) -> Router:
 
     currency = settings.default_currency
     # Entries awaiting an inline-keyboard yes/no, keyed by a short token.
-    pending: dict[str, tuple[list[ParsedEntry], str, str]] = {}
+    pending: dict[str, tuple[list[ParsedEntry], str, str, int | None]] = {}
+    # Corrections awaiting a target, same short-token scheme. Both dicts live
+    # only in memory: a token expires with the process, which is fine because
+    # the user simply re-sends the command.
+    corrections: dict[str, dict] = {}
 
-    def _persist(entries, raw_message, parser_name):
-        rows = repository.add_many(entries, raw_message, parser_name)
+    def _token() -> str:
+        return uuid_lib.uuid4().hex[:8]
+
+    def _persist(entries, raw_message, parser_name, user_id):
+        rows = repository.add_many(
+            entries, raw_message, parser_name, user_id=user_id
+        )
         sync.push_in_background(rows)
         return rows
 
@@ -117,9 +132,174 @@ def build_router(repository, sync, llm_parser, settings) -> Router:
         remaining = repository.stats().unsynced
         await message.answer(f"Synced {synced} row(s). {remaining} still pending.")
 
+    @router.message(Command("reconcile"))
+    async def on_reconcile(message: Message) -> None:
+        if not sync.sheets.enabled:
+            await message.answer("Google Sheets is not configured.")
+            return
+        await message.answer("Comparing the Sheet against the database…")
+        try:
+            report = await reconcile(repository, sync.sheets)
+        except Exception as exc:
+            await message.answer(f"Couldn't read the Sheet: {exc}")
+            return
+        await message.answer(format_report(report))
+
     @router.message(Command("stats"))
     async def on_stats(message: Message) -> None:
         await message.answer(formatting.stats(repository.stats()))
+
+    # --- corrections --------------------------------------------------------
+
+    def _picker(kind: str, value, entries) -> tuple[str, InlineKeyboardMarkup]:
+        """One inline keyboard shared by /edit and /cat."""
+        token = _token()
+        corrections[token] = {
+            "kind": kind,
+            "value": value,
+            "uuids": [e.uuid for e in entries],
+        }
+        buttons = [
+            [
+                InlineKeyboardButton(
+                    text=formatting.picker_label(expense, currency),
+                    callback_data=f"fix:{token}:{index}",
+                )
+            ]
+            for index, expense in enumerate(entries)
+        ]
+        buttons.append(
+            [InlineKeyboardButton(text="❌ Cancel", callback_data=f"fix:{token}:no")]
+        )
+        return formatting.picker_prompt(entries, currency), InlineKeyboardMarkup(
+            inline_keyboard=buttons
+        )
+
+    def _apply_amount(expense, amount: int) -> str:
+        previous = expense.amount
+        updated = repository.update_amount(expense.uuid, amount)
+        if updated is None:
+            return "That entry is gone."
+        sync.push_in_background([updated])
+        return formatting.amount_correction(updated, previous, currency)
+
+    def _apply_category(expense, category: str) -> str:
+        previous = expense.category
+        updated = repository.update_category(expense.uuid, category)
+        if updated is None:
+            return "That entry is gone."
+        sync.push_in_background([updated])
+        return formatting.category_correction(updated, previous)
+
+    def _do_undo(batch) -> str:
+        removed = repository.soft_delete_batch(batch[0].batch_id)
+        sync.push_in_background(removed)
+        return formatting.undo_confirmation(removed, currency)
+
+    @router.message(Command("last"))
+    async def on_last(message: Message) -> None:
+        batch = repository.last_batch(message.from_user.id)
+        await message.answer(formatting.last_batch(batch, currency))
+
+    @router.message(Command("undo"))
+    async def on_undo(message: Message) -> None:
+        batch = repository.last_batch(message.from_user.id)
+        if not batch:
+            await message.answer("Nothing to undo.")
+            return
+
+        # Removing something from an earlier day is much more likely to be a
+        # mistake than removing today's last message, so ask first.
+        if batch[0].occurred_at != repository.today().isoformat():
+            token = _token()
+            corrections[token] = {"kind": "undo", "batch_id": batch[0].batch_id}
+            keyboard = InlineKeyboardMarkup(
+                inline_keyboard=[
+                    [
+                        InlineKeyboardButton(
+                            text="🗑 Remove", callback_data=f"fix:{token}:yes"
+                        ),
+                        InlineKeyboardButton(
+                            text="❌ Keep", callback_data=f"fix:{token}:no"
+                        ),
+                    ]
+                ]
+            )
+            await message.answer(
+                formatting.undo_prompt(batch, currency), reply_markup=keyboard
+            )
+            return
+
+        await message.answer(_do_undo(batch))
+
+    @router.message(Command("edit"))
+    async def on_edit(message: Message, command: CommandObject) -> None:
+        raw = (command.args or "").strip()
+        parsed = regex_parser.parse_amount(raw) if raw else None
+        if parsed is None:
+            await message.answer(
+                "Couldn't read that amount. Try `/edit 45k`.", parse_mode="Markdown"
+            )
+            return
+        amount, _ = parsed
+
+        batch = repository.last_batch(message.from_user.id)
+        if not batch:
+            await message.answer("Nothing to edit.")
+            return
+        if len(batch) > 1:
+            text, keyboard = _picker("amount", amount, batch)
+            await message.answer(text, reply_markup=keyboard)
+            return
+
+        await message.answer(_apply_amount(batch[0], amount))
+
+    @router.message(Command("cat"))
+    async def on_cat(message: Message, command: CommandObject) -> None:
+        raw = (command.args or "").strip()
+        category = categories.normalize(raw) if raw else None
+        if category is None or category not in categories.CATEGORIES:
+            known = ", ".join(categories.CATEGORIES)
+            await message.answer(f"I don't know that category. Try one of:\n\n{known}")
+            return
+
+        batch = repository.last_batch(message.from_user.id)
+        if not batch:
+            await message.answer("Nothing to edit.")
+            return
+        if len(batch) > 1:
+            text, keyboard = _picker("category", category, batch)
+            await message.answer(text, reply_markup=keyboard)
+            return
+
+        await message.answer(_apply_category(batch[0], category))
+
+    @router.callback_query(F.data.startswith("fix:"))
+    async def on_fix(callback: CallbackQuery) -> None:
+        _, token, choice = callback.data.split(":", 2)
+        staged = corrections.pop(token, None)
+        if staged is None:
+            await callback.answer("That prompt expired.")
+            return
+        if choice == "no":
+            await callback.message.edit_text("❌ Nothing changed.")
+            await callback.answer()
+            return
+
+        if staged["kind"] == "undo":
+            batch = repository.entries_in_batch(staged["batch_id"])
+            text = _do_undo(batch) if batch else "Nothing to undo."
+        else:
+            expense = repository.get(staged["uuids"][int(choice)])
+            if expense is None:
+                text = "That entry is gone."
+            elif staged["kind"] == "amount":
+                text = _apply_amount(expense, staged["value"])
+            else:
+                text = _apply_category(expense, staged["value"])
+
+        await callback.message.edit_text(text)
+        await callback.answer()
 
     # --- inline confirmation ------------------------------------------------
 
@@ -130,12 +310,12 @@ def build_router(repository, sync, llm_parser, settings) -> Router:
         if staged is None:
             await callback.answer("That prompt expired.")
             return
-        entries, raw_message, parser_name = staged
+        entries, raw_message, parser_name, user_id = staged
         if decision == "no":
             await callback.message.edit_text("❌ Discarded.")
             await callback.answer()
             return
-        rows = _persist(entries, raw_message, parser_name)
+        rows = _persist(entries, raw_message, parser_name, user_id)
         await callback.message.edit_text(formatting.confirmation(rows, currency))
         await callback.answer()
 
@@ -165,8 +345,13 @@ def build_router(repository, sync, llm_parser, settings) -> Router:
             return
 
         if result.min_confidence < settings.confidence_threshold:
-            token = uuid_lib.uuid4().hex[:8]
-            pending[token] = (result.entries, raw, parser_name)
+            token = _token()
+            pending[token] = (
+                result.entries,
+                raw,
+                parser_name,
+                message.from_user.id,
+            )
             keyboard = InlineKeyboardMarkup(
                 inline_keyboard=[
                     [
@@ -180,7 +365,7 @@ def build_router(repository, sync, llm_parser, settings) -> Router:
             )
             return
 
-        rows = _persist(result.entries, raw, parser_name)
+        rows = _persist(result.entries, raw, parser_name, message.from_user.id)
         await message.answer(formatting.confirmation(rows, currency))
 
     return router

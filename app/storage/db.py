@@ -46,6 +46,36 @@ MIGRATIONS: list[list[str]] = [
         )
         """,
     ],
+    # version 2 -- attribution, message batching, correction timestamps.
+    #
+    # Additive only: nothing is dropped or retyped, so rolling back to the
+    # previous release keeps working against the same file. `ADD COLUMN` has no
+    # IF NOT EXISTS in SQLite, which is safe here because `run_migrations` only
+    # ever runs this list once per database.
+    [
+        # Who logged it. NULL means "logged before multi-owner support existed".
+        "ALTER TABLE expenses ADD COLUMN user_id INTEGER",
+        # Groups the rows produced by one message, so /undo works on the message.
+        "ALTER TABLE expenses ADD COLUMN batch_id TEXT",
+        # Last correction time. NULL means never edited.
+        "ALTER TABLE expenses ADD COLUMN updated_at TEXT",
+        "CREATE INDEX IF NOT EXISTS idx_expenses_batch ON expenses(batch_id)",
+        "CREATE INDEX IF NOT EXISTS idx_expenses_recent "
+        "ON expenses(user_id, id DESC) WHERE deleted_at IS NULL",
+        # Backfill: rows written together share created_at and raw_message --
+        # that was a batch. Worst case a legacy /undo removes one row instead
+        # of several, and only for pre-upgrade rows.
+        """
+        UPDATE expenses
+        SET batch_id = (
+            SELECT 'legacy-' || MIN(e2.id)
+            FROM expenses e2
+            WHERE e2.created_at = expenses.created_at
+              AND e2.raw_message = expenses.raw_message
+        )
+        WHERE batch_id IS NULL
+        """,
+    ],
 ]
 
 
