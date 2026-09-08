@@ -113,3 +113,9 @@ No test touches Telegram, Google, or an LLM.
 `/undo`, `/edit`, `/cat` (PRD P6); the systemd unit, backups and log rotation
 (P7); the Hermes Agent integration (P8). All three attach to
 `storage/repository.py`.
+
+## License
+
+[GNU AGPL-3.0](LICENSE) — if you run a modified version of this bot as a
+network service, you must also make that modified source available to its
+users.
