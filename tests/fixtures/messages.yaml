@@ -1,0 +1,103 @@
+# Real-shaped messages and what the regex parser must read out of them.
+# `entries` lists expected (amount, category) pairs in order.
+# `min_confidence` asserts the confidence gate behaves as intended.
+
+- message: "kopi 20k"
+  entries: [[20000, "Food & Drink"]]
+- message: "grab 45k"
+  entries: [[45000, "Transport"]]
+- message: "gojek 25k"
+  entries: [[25000, "Transport"]]
+- message: "nasi padang 25rb"
+  entries: [[25000, "Food & Drink"]]
+- message: "parkir 5000"
+  entries: [[5000, "Transport"]]
+- message: "token listrik 100rb"
+  entries: [[100000, "Bills & Utilities"]]
+- message: "pulsa 50k"
+  entries: [[50000, "Bills & Utilities"]]
+- message: "bensin 100 ribu"
+  entries: [[100000, "Transport"]]
+- message: "belanja bulanan 850rb"
+  entries: [[850000, "Groceries"]]
+- message: "sewa kos 1.5jt"
+  entries: [[1500000, "Bills & Utilities"]]
+- message: "beli laptop 12 juta"
+  entries: [[12000000, "Shopping"]]
+- message: "obat batuk 35k"
+  entries: [[35000, "Health"]]
+- message: "netflix 65rb"
+  entries: [[65000, "Bills & Utilities"]]
+- message: "tiket bioskop 50k"
+  entries: [[50000, "Entertainment"]]
+- message: "laundry 30k"
+  entries: [[30000, "Shopping"]]
+- message: "gopay topup 200k"
+  entries: [[200000, "Fees & Transfers"]]
+- message: "Rp75.000 makan malam"
+  entries: [[75000, "Food & Drink"]]
+- message: "rp 40000 grabfood"
+  entries: [[40000, "Food & Drink"]]
+- message: "belanja 250.000 di superindo"
+  entries: [[250000, "Groceries"]]
+- message: "indomaret 47.500"
+  entries: [[47500, "Groceries"]]
+
+# --- multi-item ---
+- message: "grab 45k, kopi hitam 20rb"
+  entries: [[45000, "Transport"], [20000, "Food & Drink"]]
+- message: "lunch 45k, kopi 20k, parkir 5k"
+  entries: [[45000, "Food & Drink"], [20000, "Food & Drink"], [5000, "Transport"]]
+- message: "nasi padang 25k dan es teh 5k"
+  entries: [[25000, "Food & Drink"], [5000, "Food & Drink"]]
+- message: "bensin 50k; tol 15k"
+  entries: [[50000, "Transport"], [15000, "Transport"]]
+- message: |-
+    sarapan 15k
+    ojek 12k
+  entries: [[15000, "Food & Drink"], [12000, "Transport"]]
+- message: "vitamin 85k, sabun 20k, tisu 15k"
+  entries: [[85000, "Health"], [20000, "Home"], [15000, "Home"]]
+
+# --- shorthand: bare number under 1000 means thousands, but flag it ---
+- message: "makan siang 45"
+  entries: [[45000, "Food & Drink"]]
+  min_confidence: 0.6
+- message: "kopi 20"
+  entries: [[20000, "Food & Drink"]]
+  min_confidence: 0.6
+- message: "grab 25"
+  entries: [[25000, "Transport"]]
+  min_confidence: 0.6
+
+# --- decimals with a multiplier ---
+- message: "servis motor 1.2jt"
+  entries: [[1200000, "Transport"]]
+- message: "hotel 2,5 juta"
+  entries: [[2500000, "Entertainment"]]
+- message: "kado 1.5 jt"
+  entries: [[1500000, "Fees & Transfers"]]
+
+# --- uncategorised but still logged ---
+- message: "random thing 30k"
+  entries: [[30000, "Uncategorized"]]
+- message: "titip 15k"
+  entries: [[15000, "Uncategorized"]]
+
+# --- nothing to log ---
+- message: "halo apa kabar"
+  entries: []
+- message: "/today"
+  entries: []
+- message: ""
+  entries: []
+- message: "makan enak banget tadi"
+  entries: []
+
+# --- high-confidence explicit forms ---
+- message: "sate ayam 35.000"
+  entries: [[35000, "Food & Drink"]]
+  min_confidence: 0.95
+- message: "mrt 14k"
+  entries: [[14000, "Transport"]]
+  min_confidence: 0.95
